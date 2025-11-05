@@ -1,11 +1,220 @@
-// Update this page (the content is just a fallback if you fail to update the page)
+import { useState, useEffect } from "react";
+import { GridMap } from "@/components/GridMap";
+import { ControlPanel } from "@/components/ControlPanel";
+import { StatsPanel } from "@/components/StatsPanel";
+import { POVCamera } from "@/components/POVCamera";
+import { Position, findPathAStar, findPathDijkstra } from "@/utils/pathfinding";
+import { toast } from "sonner";
+import { motion } from "framer-motion";
+import { Plane } from "lucide-react";
+
+const GRID_SIZE = 20;
 
 const Index = () => {
+  const [grid, setGrid] = useState<number[][]>(() =>
+    Array(GRID_SIZE).fill(0).map(() => Array(GRID_SIZE).fill(0))
+  );
+  const [start, setStart] = useState<Position | null>({ x: 2, y: 2 });
+  const [end, setEnd] = useState<Position | null>({ x: 17, y: 17 });
+  const [path, setPath] = useState<Position[]>([]);
+  const [explored, setExplored] = useState<Position[]>([]);
+  const [dronePosition, setDronePosition] = useState<Position | null>(null);
+  const [isSimulating, setIsSimulating] = useState(false);
+  const [algorithm, setAlgorithm] = useState<"astar" | "dijkstra">("astar");
+  const [mode, setMode] = useState<"start" | "end" | "obstacle">("obstacle");
+  const [status, setStatus] = useState("Waiting for input...");
+  const [stats, setStats] = useState({ pathLength: 0, explored: 0, obstacles: 0, timeTaken: 0 });
+
+  const handleCellClick = (x: number, y: number) => {
+    if (mode === "start") {
+      setStart({ x, y });
+      const newGrid = [...grid];
+      newGrid[y][x] = 0;
+      setGrid(newGrid);
+      toast.success("Start point set");
+    } else if (mode === "end") {
+      setEnd({ x, y });
+      const newGrid = [...grid];
+      newGrid[y][x] = 0;
+      setGrid(newGrid);
+      toast.success("Target point set");
+    } else if (mode === "obstacle") {
+      const newGrid = [...grid];
+      newGrid[y][x] = newGrid[y][x] === 1 ? 0 : 1;
+      setGrid(newGrid);
+      setStats(prev => ({ ...prev, obstacles: prev.obstacles + (newGrid[y][x] === 1 ? 1 : -1) }));
+    }
+  };
+
+  const randomizeGrid = () => {
+    const newGrid = Array(GRID_SIZE).fill(0).map(() =>
+      Array(GRID_SIZE).fill(0).map(() => (Math.random() > 0.7 ? 1 : 0))
+    );
+    
+    // Ensure start and end are clear
+    if (start) newGrid[start.y][start.x] = 0;
+    if (end) newGrid[end.y][end.x] = 0;
+    
+    setGrid(newGrid);
+    const obstacleCount = newGrid.flat().filter(cell => cell === 1).length;
+    setStats(prev => ({ ...prev, obstacles: obstacleCount }));
+    toast.success("Terrain randomized");
+  };
+
+  const resetSimulation = () => {
+    setPath([]);
+    setExplored([]);
+    setDronePosition(null);
+    setIsSimulating(false);
+    setStatus("Waiting for input...");
+    setStats({ pathLength: 0, explored: 0, obstacles: stats.obstacles, timeTaken: 0 });
+  };
+
+  const simulateFlight = async () => {
+    if (!start || !end) {
+      toast.error("Please set both start and target points");
+      return;
+    }
+
+    resetSimulation();
+    setIsSimulating(true);
+    setStatus("Computing path...");
+
+    const startTime = performance.now();
+    const exploredNodes: Position[] = [];
+
+    const pathFinder = algorithm === "astar" ? findPathAStar : findPathDijkstra;
+    
+    const computedPath = pathFinder(grid, start, end, (pos) => {
+      exploredNodes.push(pos);
+    });
+
+    const endTime = performance.now();
+    const timeTaken = Math.round(endTime - startTime);
+
+    if (computedPath.length === 0) {
+      setStatus("No path found!");
+      setIsSimulating(false);
+      toast.error("No path found");
+      return;
+    }
+
+    setStatus("Path found! Executing flight...");
+    setStats({
+      pathLength: computedPath.length,
+      explored: exploredNodes.length,
+      obstacles: stats.obstacles,
+      timeTaken,
+    });
+
+    // Animate exploration
+    for (let i = 0; i < exploredNodes.length; i += 3) {
+      setExplored(exploredNodes.slice(0, i + 3));
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+
+    setExplored(exploredNodes);
+    setPath(computedPath);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    // Animate drone movement
+    setStatus("Drone in flight...");
+    for (const pos of computedPath) {
+      setDronePosition(pos);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+
+    setStatus("Mission complete!");
+    toast.success("Flight completed successfully!");
+    setIsSimulating(false);
+  };
+
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background">
-      <div className="text-center">
-        <h1 className="mb-4 text-4xl font-bold">Welcome to Your Blank App</h1>
-        <p className="text-xl text-muted-foreground">Start building your amazing project here!</p>
+    <div className="min-h-screen p-4 md:p-8">
+      <div className="max-w-7xl mx-auto space-y-6">
+        {/* Header */}
+        <motion.div
+          initial={{ opacity: 0, y: -20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="text-center space-y-2"
+        >
+          <div className="flex items-center justify-center gap-3">
+            <motion.div
+              animate={{ rotate: 360 }}
+              transition={{ duration: 3, repeat: Infinity, ease: "linear" }}
+            >
+              <Plane className="w-8 h-8 text-primary" />
+            </motion.div>
+            <h1 className="text-4xl md:text-5xl font-bold bg-gradient-to-r from-primary via-secondary to-accent bg-clip-text text-transparent">
+              AeroPath
+            </h1>
+          </div>
+          <p className="text-muted-foreground text-sm md:text-base">
+            Autonomous Drone Path Planning Simulator
+          </p>
+        </motion.div>
+
+        {/* Main Grid */}
+        <div className="grid lg:grid-cols-[1fr_300px] gap-6">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            transition={{ delay: 0.2 }}
+          >
+            <GridMap
+              grid={grid}
+              start={start}
+              end={end}
+              path={path}
+              explored={explored}
+              dronePosition={dronePosition}
+              onCellClick={handleCellClick}
+              isSimulating={isSimulating}
+            />
+          </motion.div>
+
+          <div className="space-y-6">
+            <motion.div
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              transition={{ delay: 0.3 }}
+            >
+              <ControlPanel
+                algorithm={algorithm}
+                onAlgorithmChange={setAlgorithm}
+                onSimulate={simulateFlight}
+                onReset={resetSimulation}
+                onRandomize={randomizeGrid}
+                isSimulating={isSimulating}
+                mode={mode}
+                onModeChange={setMode}
+              />
+            </motion.div>
+
+            <motion.div
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              transition={{ delay: 0.4 }}
+            >
+              <StatsPanel
+                algorithm={algorithm}
+                pathLength={stats.pathLength}
+                explored={stats.explored}
+                obstacles={stats.obstacles}
+                status={status}
+                timeTaken={stats.timeTaken}
+              />
+            </motion.div>
+
+            <motion.div
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              transition={{ delay: 0.5 }}
+            >
+              <POVCamera isActive={isSimulating} />
+            </motion.div>
+          </div>
+        </div>
       </div>
     </div>
   );
