@@ -9,6 +9,10 @@ interface StatsPanelProps {
   obstacles: number;
   status: string;
   timeTaken: number;
+  dynamicMode: boolean;
+  replansCount: number;
+  movingObstaclesCount: number;
+  isPaused: boolean;
 }
 
 export const StatsPanel = ({
@@ -18,6 +22,10 @@ export const StatsPanel = ({
   obstacles,
   status,
   timeTaken,
+  dynamicMode,
+  replansCount,
+  movingObstaclesCount,
+  isPaused,
 }: StatsPanelProps) => {
   const stats = [
     { label: "Algorithm", value: algorithm.toUpperCase(), color: "bg-primary" },
@@ -25,13 +33,24 @@ export const StatsPanel = ({
     { label: "Nodes Explored", value: explored, color: "bg-secondary" },
     { label: "Obstacles", value: obstacles, color: "bg-destructive" },
     { label: "Time Taken", value: `${timeTaken}ms`, color: "bg-muted" },
+    { label: "Dynamic Mode", value: dynamicMode ? "ON" : "OFF", color: dynamicMode ? "bg-accent" : "bg-muted" },
+    { label: "Replans Done", value: replansCount, color: "bg-orange-500" },
+    { label: "Moving Objects", value: movingObstaclesCount, color: "bg-secondary" },
   ];
 
   return (
     <Card className="cyber-border bg-card/50 backdrop-blur-sm p-6">
       <div className="space-y-4">
         <div>
-          <h3 className="text-lg font-semibold mb-2 text-primary">Mission Status</h3>
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-lg font-semibold text-primary">Mission Status</h3>
+            {dynamicMode && (
+              <div className="flex items-center gap-1">
+                <div className={`w-2 h-2 rounded-full ${isPaused ? 'bg-destructive' : 'bg-accent animate-pulse'}`} />
+                <span className="text-xs text-muted-foreground">{isPaused ? 'PAUSED' : 'LIVE'}</span>
+              </div>
+            )}
+          </div>
           <motion.div
             initial={{ opacity: 0, y: -10 }}
             animate={{ opacity: 1, y: 0 }}

@@ -1,9 +1,11 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { GridMap } from "@/components/GridMap";
 import { ControlPanel } from "@/components/ControlPanel";
 import { StatsPanel } from "@/components/StatsPanel";
 import { POVCamera } from "@/components/POVCamera";
+import { RadarOverlay } from "@/components/RadarOverlay";
 import { Position, findPathAStar, findPathDijkstra } from "@/utils/pathfinding";
+import { MovingObstacle, SimulationSpeed } from "@/types/simulation";
 import { toast } from "sonner";
 import { motion } from "framer-motion";
 import { Plane } from "lucide-react";
@@ -24,6 +26,98 @@ const Index = () => {
   const [mode, setMode] = useState<"start" | "end" | "obstacle">("obstacle");
   const [status, setStatus] = useState("Waiting for input...");
   const [stats, setStats] = useState({ pathLength: 0, explored: 0, obstacles: 0, timeTaken: 0 });
+  
+  const [dynamicMode, setDynamicMode] = useState(false);
+  const [speed, setSpeed] = useState<SimulationSpeed>(1);
+  const [isPaused, setIsPaused] = useState(false);
+  const [movingObstacles, setMovingObstacles] = useState<MovingObstacle[]>([]);
+  const [replansCount, setReplansCount] = useState(0);
+  const [recalculatedPath, setRecalculatedPath] = useState<Position[]>([]);
+  
+  const simulationRef = useRef<{ shouldStop: boolean }>({ shouldStop: false });
+
+  const generateMovingObstacles = () => {
+    const count = 3 + Math.floor(Math.random() * 3);
+    const obstacles: MovingObstacle[] = [];
+    const types: Array<'car' | 'bird' | 'drone'> = ['car', 'bird', 'drone'];
+    
+    for (let i = 0; i < count; i++) {
+      let x, y;
+      do {
+        x = Math.floor(Math.random() * GRID_SIZE);
+        y = Math.floor(Math.random() * GRID_SIZE);
+      } while (
+        grid[y][x] === 1 ||
+        (start && x === start.x && y === start.y) ||
+        (end && x === end.x && y === end.y) ||
+        obstacles.some(o => o.x === x && o.y === y)
+      );
+      
+      obstacles.push({
+        id: `obstacle-${i}`,
+        x,
+        y,
+        direction: ['up', 'down', 'left', 'right'][Math.floor(Math.random() * 4)] as any,
+        type: types[Math.floor(Math.random() * types.length)],
+        speed: 1,
+      });
+    }
+    
+    return obstacles;
+  };
+  
+  const moveObstacles = () => {
+    setMovingObstacles(prev => prev.map(obstacle => {
+      let newX = obstacle.x;
+      let newY = obstacle.y;
+      let newDirection = obstacle.direction;
+      
+      // Try to move in current direction
+      switch (obstacle.direction) {
+        case 'up':
+          newY = obstacle.y - 1;
+          break;
+        case 'down':
+          newY = obstacle.y + 1;
+          break;
+        case 'left':
+          newX = obstacle.x - 1;
+          break;
+        case 'right':
+          newX = obstacle.x + 1;
+          break;
+      }
+      
+      // Check if new position is valid
+      if (
+        newX < 0 || newX >= GRID_SIZE ||
+        newY < 0 || newY >= GRID_SIZE ||
+        grid[newY][newX] === 1
+      ) {
+        // Change direction randomly
+        const directions: Array<'up' | 'down' | 'left' | 'right'> = ['up', 'down', 'left', 'right'];
+        newDirection = directions[Math.floor(Math.random() * directions.length)];
+        newX = obstacle.x;
+        newY = obstacle.y;
+      }
+      
+      return {
+        ...obstacle,
+        x: newX,
+        y: newY,
+        direction: newDirection,
+      };
+    }));
+  };
+  
+  const checkCollisionWithPath = (obstacles: MovingObstacle[], currentPath: Position[]) => {
+    for (const obstacle of obstacles) {
+      if (currentPath.some(p => p.x === obstacle.x && p.y === obstacle.y)) {
+        return true;
+      }
+    }
+    return false;
+  };
 
   const handleCellClick = (x: number, y: number) => {
     if (mode === "start") {
@@ -62,12 +156,17 @@ const Index = () => {
   };
 
   const resetSimulation = () => {
+    simulationRef.current.shouldStop = true;
     setPath([]);
     setExplored([]);
     setDronePosition(null);
     setIsSimulating(false);
+    setIsPaused(false);
     setStatus("Waiting for input...");
     setStats({ pathLength: 0, explored: 0, obstacles: stats.obstacles, timeTaken: 0 });
+    setMovingObstacles([]);
+    setReplansCount(0);
+    setRecalculatedPath([]);
   };
 
   const simulateFlight = async () => {
@@ -76,16 +175,30 @@ const Index = () => {
       return;
     }
 
-    resetSimulation();
+    simulationRef.current.shouldStop = false;
+    setPath([]);
+    setExplored([]);
+    setDronePosition(null);
     setIsSimulating(true);
+    setIsPaused(false);
+    setReplansCount(0);
+    setRecalculatedPath([]);
     setStatus("Computing path...");
+
+    // Generate moving obstacles if dynamic mode is on
+    if (dynamicMode) {
+      const obstacles = generateMovingObstacles();
+      setMovingObstacles(obstacles);
+    } else {
+      setMovingObstacles([]);
+    }
 
     const startTime = performance.now();
     const exploredNodes: Position[] = [];
 
     const pathFinder = algorithm === "astar" ? findPathAStar : findPathDijkstra;
     
-    const computedPath = pathFinder(grid, start, end, (pos) => {
+    let computedPath = pathFinder(grid, start, end, (pos) => {
       exploredNodes.push(pos);
     });
 
@@ -109,24 +222,84 @@ const Index = () => {
 
     // Animate exploration
     for (let i = 0; i < exploredNodes.length; i += 3) {
+      if (simulationRef.current.shouldStop) return;
       setExplored(exploredNodes.slice(0, i + 3));
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await new Promise((resolve) => setTimeout(resolve, 10 / speed));
     }
 
     setExplored(exploredNodes);
     setPath(computedPath);
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    await new Promise((resolve) => setTimeout(resolve, 300 / speed));
 
-    // Animate drone movement
+    // Animate drone movement with dynamic obstacle avoidance
     setStatus("Drone in flight...");
-    for (const pos of computedPath) {
-      setDronePosition(pos);
-      await new Promise((resolve) => setTimeout(resolve, 100));
+    let currentPathIndex = 0;
+    let currentPath = [...computedPath];
+    
+    while (currentPathIndex < currentPath.length) {
+      if (simulationRef.current.shouldStop) return;
+      
+      // Wait if paused
+      while (isPaused && !simulationRef.current.shouldStop) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      
+      if (simulationRef.current.shouldStop) return;
+      
+      const currentPos = currentPath[currentPathIndex];
+      setDronePosition(currentPos);
+      
+      // Move obstacles if dynamic mode
+      if (dynamicMode && currentPathIndex % 2 === 0) {
+        moveObstacles();
+        
+        // Check for collision with remaining path
+        const remainingPath = currentPath.slice(currentPathIndex + 1);
+        const needsReplan = checkCollisionWithPath(movingObstacles, remainingPath);
+        
+        if (needsReplan) {
+          setStatus("Obstacle detected! Recalculating...");
+          toast.warning("Path recalculated!");
+          
+          // Recalculate path from current position
+          const newExplored: Position[] = [];
+          const newPath = pathFinder(grid, currentPos, end, (pos) => {
+            newExplored.push(pos);
+          });
+          
+          if (newPath.length > 0) {
+            currentPath = newPath;
+            currentPathIndex = 0;
+            setRecalculatedPath(newPath);
+            setReplansCount(prev => prev + 1);
+            setStats(prev => ({
+              ...prev,
+              pathLength: newPath.length,
+              explored: prev.explored + newExplored.length,
+            }));
+            
+            // Brief pause to show recalculation
+            await new Promise((resolve) => setTimeout(resolve, 500 / speed));
+            setStatus("Following new path...");
+            continue;
+          } else {
+            setStatus("No alternative path!");
+            toast.error("Cannot find alternative path");
+            break;
+          }
+        }
+      }
+      
+      currentPathIndex++;
+      await new Promise((resolve) => setTimeout(resolve, 100 / speed));
     }
 
-    setStatus("Mission complete!");
-    toast.success("Flight completed successfully!");
+    if (!simulationRef.current.shouldStop) {
+      setStatus("Mission complete!");
+      toast.success("Flight completed successfully!");
+    }
     setIsSimulating(false);
+    setIsPaused(false);
   };
 
   return (
@@ -156,22 +329,40 @@ const Index = () => {
 
         {/* Main Grid */}
         <div className="grid lg:grid-cols-[1fr_300px] gap-6">
-          <motion.div
-            initial={{ opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1 }}
-            transition={{ delay: 0.2 }}
-          >
-            <GridMap
-              grid={grid}
-              start={start}
-              end={end}
-              path={path}
-              explored={explored}
-              dronePosition={dronePosition}
-              onCellClick={handleCellClick}
-              isSimulating={isSimulating}
-            />
-          </motion.div>
+          <div className="space-y-4">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              transition={{ delay: 0.2 }}
+            >
+              <GridMap
+                grid={grid}
+                start={start}
+                end={end}
+                path={path}
+                explored={explored}
+                dronePosition={dronePosition}
+                onCellClick={handleCellClick}
+                isSimulating={isSimulating}
+                movingObstacles={movingObstacles}
+                recalculatedPath={recalculatedPath}
+              />
+            </motion.div>
+            
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.6 }}
+              className="flex justify-end"
+            >
+              <RadarOverlay
+                dronePosition={dronePosition}
+                movingObstacles={movingObstacles}
+                gridSize={GRID_SIZE}
+                isActive={isSimulating && !isPaused}
+              />
+            </motion.div>
+          </div>
 
           <div className="space-y-6">
             <motion.div
@@ -188,6 +379,12 @@ const Index = () => {
                 isSimulating={isSimulating}
                 mode={mode}
                 onModeChange={setMode}
+                dynamicMode={dynamicMode}
+                onDynamicModeChange={setDynamicMode}
+                speed={speed}
+                onSpeedChange={setSpeed}
+                isPaused={isPaused}
+                onPauseToggle={() => setIsPaused(!isPaused)}
               />
             </motion.div>
 
@@ -203,6 +400,10 @@ const Index = () => {
                 obstacles={stats.obstacles}
                 status={status}
                 timeTaken={stats.timeTaken}
+                dynamicMode={dynamicMode}
+                replansCount={replansCount}
+                movingObstaclesCount={movingObstacles.length}
+                isPaused={isPaused}
               />
             </motion.div>
 
